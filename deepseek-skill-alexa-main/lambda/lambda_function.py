@@ -1,0 +1,157 @@
+import os
+import logging
+import ask_sdk_core.utils as ask_utils
+
+from ask_sdk_core.skill_builder import SkillBuilder
+from ask_sdk_core.dispatch_components import AbstractRequestHandler
+from ask_sdk_core.dispatch_components import AbstractExceptionHandler
+from ask_sdk_core.handler_input import HandlerInput
+
+from ask_sdk_model import Response
+
+import google.generativeai as genai
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCaOGY-qWQwrvNWlsx8YP9SAMMHxI6i3CI")
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+try:
+    model = genai.GenerativeModel(
+        MODEL,
+        system_instruction="Você é uma assistente muito útil. Responda em Português do Brasil, com texto corrido e até 400 caracteres."
+    )
+except Exception as e:
+    logger.warning("Modelo %s indisponível, fallback para gemini-1.5-flash: %s", MODEL, e)
+    MODEL = "gemini-1.5-flash"
+    model = genai.GenerativeModel(
+        MODEL,
+        system_instruction="Você é uma assistente muito útil. Responda em Português do Brasil, com texto corrido e até 400 caracteres."
+    )
+
+chat_session = model.start_chat(history=[])
+
+
+class LaunchRequestHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        # type: (HandlerInput) -> bool
+
+        return ask_utils.is_request_type("LaunchRequest")(handler_input)
+
+    def handle(self, handler_input):
+        # type: (HandlerInput) -> Response
+        speak_output = (
+            "Bem vindo ao assistente 'dipi siqui'! Qual a sua pergunta?"
+        )
+
+        return (
+            handler_input.response_builder.speak(speak_output)
+            .ask(speak_output)
+            .response
+        )
+
+
+class GptQueryIntentHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        # type: (HandlerInput) -> bool
+        return ask_utils.is_intent_name("GptQueryIntent")(handler_input)
+
+    def handle(self, handler_input):
+        # type: (HandlerInput) -> Response
+        query = handler_input.request_envelope.request.intent.slots["query"].value
+        response = generate_gpt_response(query)
+
+        return (
+            handler_input.response_builder.speak(response)
+            .ask("Você pode fazer uma nova pergunta ou falar: sair.")
+            .response
+        )
+
+
+def generate_gpt_response(query):
+    try:
+        response = chat_session.send_message(query)
+        reply = (response.text or "").strip()
+        if not reply:
+            return "Desculpe, não obtive uma resposta do modelo."
+        return reply[:400]
+    except Exception as e:
+        logger.error(e, exc_info=True)
+        return f"Erro ao gerar resposta: {str(e)}"
+
+
+class HelpIntentHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        # type: (HandlerInput) -> bool
+        return ask_utils.is_intent_name("AMAZON.HelpIntent")(handler_input)
+
+    def handle(self, handler_input):
+        # type: (HandlerInput) -> Response
+        speak_output = "Como posso te ajudar?"
+
+        return (
+            handler_input.response_builder.speak(speak_output)
+            .ask(speak_output)
+            .response
+        )
+
+
+class CancelOrStopIntentHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        # type: (HandlerInput) -> bool
+        return ask_utils.is_intent_name("AMAZON.CancelIntent")(
+            handler_input
+        ) or ask_utils.is_intent_name("AMAZON.StopIntent")(handler_input)
+
+    def handle(self, handler_input):
+        # type: (HandlerInput) -> Response
+        speak_output = "Até logo!"
+
+        return handler_input.response_builder.speak(speak_output).response
+
+
+class SessionEndedRequestHandler(AbstractRequestHandler):
+    def can_handle(self, handler_input):
+        # type: (HandlerInput) -> bool
+        return ask_utils.is_request_type("SessionEndedRequest")(handler_input)
+
+    def handle(self, handler_input):
+        # type: (HandlerInput) -> Response
+
+        # Any cleanup logic goes here.
+
+        return handler_input.response_builder.response
+
+
+class CatchAllExceptionHandler(AbstractExceptionHandler):
+    def can_handle(self, handler_input, exception):
+        # type: (HandlerInput, Exception) -> bool
+        return True
+
+    def handle(self, handler_input, exception):
+        # type: (HandlerInput, Exception) -> Response
+        logger.error(exception, exc_info=True)
+
+        speak_output = "Desculpe, não consegui processar sua solicitação."
+
+        return (
+            handler_input.response_builder.speak(speak_output)
+            .ask(speak_output)
+            .response
+        )
+
+
+sb = SkillBuilder()
+
+sb.add_request_handler(LaunchRequestHandler())
+sb.add_request_handler(GptQueryIntentHandler())
+sb.add_request_handler(HelpIntentHandler())
+sb.add_request_handler(CancelOrStopIntentHandler())
+sb.add_request_handler(SessionEndedRequestHandler())
+
+sb.add_exception_handler(CatchAllExceptionHandler())
+
+lambda_handler = sb.lambda_handler()
